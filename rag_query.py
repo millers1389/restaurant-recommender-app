@@ -12,7 +12,6 @@ import os
 from dotenv import load_dotenv
 from functools import lru_cache
 import langchain
-import openai
 
 load_dotenv()
 
@@ -44,7 +43,7 @@ Question:{question}
 Answer:"""
     PROMPT = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
     
-    retriever = vector_store.as_retriever(search_kwargs={"k": 2})
+    retriever = vector_store.as_retriever(search_kwargs={"k": 2})  # Retrieving 2 documents
     
     return ConversationalRetrievalChain.from_llm(
         llm=llm,
@@ -56,18 +55,8 @@ Answer:"""
 
 @lru_cache(maxsize=1000)
 def get_cached_response(query):
-    try:
-        return get_response(qa_chain, query)
-    except openai.error.InvalidRequestError as e:
-        if "maximum context length" in str(e).lower():
-            return {
-                'answer': "I'm sorry, can you please ask a different question?",
-                'sources': [],
-                'tokens_used': 0,
-                'cost': 0
-            }
-        else:
-            raise e
+    # This function will cache responses for repeated queries
+    return get_response(qa_chain, query)
 
 def get_response(qa_chain, query):
     truncated_query = truncate_text(query, 50)
@@ -80,7 +69,7 @@ def get_response(qa_chain, query):
     
     sources = []
     if result.get('source_documents'):
-        for i, doc in enumerate(result['source_documents'][:2], 1):
+        for i, doc in enumerate(result['source_documents'][:2], 1):  # Process up to 2 documents
             source = doc.metadata.get('source', 'Unknown')
             content = truncate_text(doc.page_content, 50)
             sources.append(f"Source {i}: {source} - Content: {content}")
@@ -109,21 +98,17 @@ def main():
         if query.lower() == 'exit':
             break
         
-        try:
-            response = get_cached_response(query)
-            
-            print("\nAnswer:", response['answer'])
-            for source in response['sources']:
-                print("\n" + source)
-            print(f"\nTokens used: {response['tokens_used']}")
-            print(f"Cost: ${response['cost']:.4f}")
-            
-            print("\nChat History:")
-            for message in qa_chain.memory.chat_memory.messages[-2:]:
-                print(f"{message.type}: {message.content[:30]}...")
-        except Exception as e:
-            print("\nAn error occurred. Please try a different question.")
-            print(f"Error details: {str(e)}")
+        response = get_cached_response(query)
+        
+        print("\nAnswer:", response['answer'])
+        for source in response['sources']:
+            print("\n" + source)
+        print(f"\nTokens used: {response['tokens_used']}")
+        print(f"Cost: ${response['cost']:.4f}")
+        
+        print("\nChat History:")
+        for message in qa_chain.memory.chat_memory.messages[-2:]:
+            print(f"{message.type}: {message.content[:30]}...")
 
 if __name__ == "__main__":
     main()
