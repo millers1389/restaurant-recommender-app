@@ -4,6 +4,12 @@ import os
 from dotenv import load_dotenv
 from arize_instrument import arize_instrument
 from openai import OpenAIError
+import traceback
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -27,9 +33,9 @@ def setup_arize_if_needed():
         # Set the environment variable
         os.environ['ARIZE_INSTRUMENTED'] = 'true'
         
-        print("Arize setup completed.")
+        logger.info("Arize setup completed.")
     else:
-        print("Arize already instrumented. Skipping setup.")
+        logger.info("Arize already instrumented. Skipping setup.")
 
 # Run the setup check
 setup_arize_if_needed()
@@ -48,8 +54,18 @@ if 'qa_chain' not in st.session_state:
         vector_store = load_vector_store()
         st.session_state.qa_chain = setup_qa_chain(vector_store)
 
+# Initialize other session state variables
 if 'messages' not in st.session_state:
     st.session_state.messages = []
+
+if 'sources' not in st.session_state:
+    st.session_state.sources = []
+
+if 'last_tokens_used' not in st.session_state:
+    st.session_state.last_tokens_used = 0
+
+if 'last_query_cost' not in st.session_state:
+    st.session_state.last_query_cost = 0.0
 
 # Main UI
 st.title("🍽️ Raleigh Restaurant Recommender")
@@ -75,49 +91,80 @@ if prompt := st.chat_input("What would you like to know about restaurants in Ral
         with st.spinner("Thinking..."):
             try:
                 response = get_response(st.session_state.qa_chain, prompt)
-                full_response = f"{response['answer']}\n\nSources:"
-                for source in response['sources']:
-                    full_response += f"\n- {source}"
-                message_placeholder.markdown(full_response)
+                logger.info(f"Raw response: {response}")  # Log the raw response
                 
-                # Display token usage and cost
-                st.sidebar.subheader("Last Query Statistics:")
-                col1, col2 = st.sidebar.columns(2)
-                with col1:
-                    st.metric("Tokens Used", response['tokens_used'])
-                with col2:
-                    st.metric("Query Cost", f"${response['cost']:.4f}")
-            
+                if not isinstance(response, dict):
+                    raise ValueError(f"Expected dict response, got {type(response)}")
+                
+                if 'answer' not in response:
+                    raise KeyError("'answer' key not found in response")
+                
+                answer = response['answer']
+                message_placeholder.markdown(answer)
+                
+                # Update sources and statistics in session state
+                st.session_state.sources = [source.split(' - ')[0] for source in response.get('sources', [])]
+                st.session_state.last_tokens_used = response.get('tokens_used', 0)
+                st.session_state.last_query_cost = response.get('cost', 0.0)
+                
             except OpenAIError as e:
+                logger.error(f"OpenAI API error: {str(e)}")
                 if "maximum context length" in str(e).lower():
-                    error_message = "I'm sorry, but that question is too complex for me to answer. Could you please ask a simpler or shorter question?"
+                    answer = "I'm sorry, but that question is too complex for me to answer. Could you please ask a simpler or shorter question?"
                 else:
-                    error_message = "I encountered an error while processing your request. Could you please try asking your question differently?"
-                message_placeholder.markdown(error_message)
-                full_response = error_message
+                    answer = f"I encountered an error while processing your request: {str(e)}"
+                message_placeholder.markdown(answer)
+                # Set token usage and sources to empty for errors
+                st.session_state.last_tokens_used = 0
+                st.session_state.last_query_cost = 0.0
+                st.session_state.sources = []
             
             except Exception as e:
-                error_message = "An unexpected error occurred. Please try asking your question again."
-                message_placeholder.markdown(error_message)
-                full_response = error_message
+                logger.error(f"Unexpected error: {str(e)}")
+                logger.error(traceback.format_exc())
+                answer = f"An unexpected error occurred: {str(e)}. Please try asking your question again."
+                message_placeholder.markdown(answer)
+                # Set token usage and sources to empty for errors
+                st.session_state.last_tokens_used = 0
+                st.session_state.last_query_cost = 0.0
+                st.session_state.sources = []
     
-    st.session_state.messages.append({"role": "assistant", "content": full_response})
+    st.session_state.messages.append({"role": "assistant", "content": answer})
+
+# Sidebar
+st.sidebar.title("Sources and Statistics")
+
+
+# Display token usage and cost in the sidebar
+st.sidebar.subheader("Last Query Statistics")
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    st.metric("Tokens Used", st.session_state.last_tokens_used)
+with col2:
+    st.metric("Query Cost", f"${st.session_state.last_query_cost:.4f}")
+
+# Display sources in the sidebar
+if st.session_state.sources:
+    st.sidebar.subheader("Sources for Last Query")
+    for i, source in enumerate(st.session_state.sources, 1):
+        st.sidebar.markdown(f"{i}. {source}")
+else:
+    st.sidebar.info("No sources available for the last query.")
 
 # Additional information
 st.sidebar.title("About")
 st.sidebar.info(
     "This app uses AI to provide information about restaurants in Raleigh, NC. "
-    "It's powered by a RAG (Retrieval-Augmented Generation) system, which combines "
-    "a knowledge base about local restaurants with the ability to generate human-like responses."
 )
 st.sidebar.warning(
-    "Please note that the AI's knowledge is based on its training data and may not include "
-    "the very latest information about restaurants. Always verify important details directly "
-    "with the restaurants."
+    "Please note that the AI's knowledge may not include the very latest information about restaurants."
 )
 
 # Clear chat button
 if st.sidebar.button("Clear Chat"):
     st.session_state.messages = []
+    st.session_state.sources = []
     st.session_state.qa_chain.memory.clear()
-    st.experimental_rerun()
+    # Reset token statistics
+    st.session_state.last_tokens_used = 0
+    st.session_state.last_query_cost = 0.0
