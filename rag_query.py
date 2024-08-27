@@ -1,10 +1,10 @@
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferWindowMemory
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
-from langchain_community.vectorstores import Annoy
+from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings
-from langchain.callbacks import get_openai_callback
+from langchain_community.callbacks.manager import get_openai_callback
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import tiktoken
 import os
@@ -35,7 +35,8 @@ def truncate_text(text: str, max_tokens: int) -> str:
 @lru_cache(maxsize=100)
 def load_vector_store():
     embeddings = OpenAIEmbeddings()
-    return Annoy.load_local("vector_store", embeddings, allow_dangerous_deserialization=True)
+    persist_directory = os.path.join(os.getcwd(), "vector_store")
+    return Chroma(persist_directory=persist_directory, embedding_function=embeddings)
 
 def setup_qa_chain(vector_store):
     llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0.5)
@@ -57,7 +58,7 @@ Concise Answer (2-4 sentences):"""
 
     PROMPT = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
     
-    retriever = vector_store.as_retriever(search_kwargs={"k": 2})  # Reduced from 3 to 2
+    retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 2})
     
     return ConversationalRetrievalChain.from_llm(
         llm=llm,
@@ -86,32 +87,6 @@ def get_response(qa_chain, query):
         while chat_history_tokens > MAX_HISTORY_TOKENS and chat_history:
             removed_message = chat_history.pop(0)
             chat_history_tokens -= num_tokens_from_string(str(removed_message))
-        
-        # Retrieve documents
-        docs = qa_chain.retriever.get_relevant_documents(query)
-        
-        # Truncate documents
-        truncated_docs = []
-        current_doc_tokens = 0
-        for doc in docs:
-            doc_tokens = num_tokens_from_string(doc.page_content)
-            if current_doc_tokens + doc_tokens <= MAX_DOCUMENT_TOKENS:
-                truncated_docs.append(doc)
-                current_doc_tokens += doc_tokens
-            else:
-                remaining_tokens = MAX_DOCUMENT_TOKENS - current_doc_tokens
-                if remaining_tokens > 0:
-                    doc.page_content = truncate_text(doc.page_content, remaining_tokens)
-                    truncated_docs.append(doc)
-                break
-        
-        # Ensure total tokens are within limit
-        total_tokens = query_tokens + chat_history_tokens + current_doc_tokens
-        if total_tokens > MAX_TOKENS:
-            logger.warning(f"Total tokens ({total_tokens}) exceed MAX_TOKENS ({MAX_TOKENS}). Reducing context.")
-            while total_tokens > MAX_TOKENS and truncated_docs:
-                removed_doc = truncated_docs.pop()
-                total_tokens -= num_tokens_from_string(removed_doc.page_content)
 
         # Run the query
         result = qa_chain({"question": query, "chat_history": chat_history})
@@ -121,7 +96,7 @@ def get_response(qa_chain, query):
         logger.info(f"Completion tokens: {cb.completion_tokens}")
         
         # Log retrieved documents
-        for i, doc in enumerate(truncated_docs):
+        for i, doc in enumerate(result.get('source_documents', [])):
             doc_tokens = num_tokens_from_string(doc.page_content)
             logger.info(f"Document {i+1} tokens: {doc_tokens}")
             logger.info(f"Document {i+1} content preview: {doc.page_content[:100]}...")
@@ -137,7 +112,7 @@ def get_response(qa_chain, query):
         answer = ' '.join(sentences[:4])
         logger.info("Response truncated to 4 sentences.")
 
-    sources = [f"{doc.metadata.get('source', 'Unknown')} - {doc.page_content[:100]}..." for doc in truncated_docs]
+    sources = [f"{doc.metadata.get('source', 'Unknown')} - {doc.page_content[:100]}..." for doc in result.get('source_documents', [])]
 
     return {
         'answer': answer,
@@ -146,6 +121,7 @@ def get_response(qa_chain, query):
         'cost': cb.total_cost
     }
 
+# TODO: This is never called from app.py, so it's not being used.
 def main():
     print("Loading vector store...")
     vector_store = load_vector_store()

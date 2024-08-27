@@ -31,7 +31,7 @@
 import os
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
 from opentelemetry.sdk import trace as trace_sdk
 from opentelemetry import trace as trace_api
 from openinference.instrumentation.langchain import LangChainInstrumentor
@@ -51,11 +51,15 @@ def arize_instrument(space_id, api_key, model_id, model_version):
     )
 
     endpoint = "https://otlp.arize.com/v1"
-    span_exporter = OTLPSpanExporter(endpoint=endpoint)
-    span_processor = SimpleSpanProcessor(span_exporter=span_exporter)
+    otlp_span_exporter = OTLPSpanExporter(endpoint=endpoint)
+    console_span_exporter = ConsoleSpanExporter()
+
+    otlp_span_processor = SimpleSpanProcessor(span_exporter=otlp_span_exporter)
+    console_span_processor = SimpleSpanProcessor(span_exporter=console_span_exporter)
 
     tracer_provider = trace_sdk.TracerProvider(resource=resource)
-    tracer_provider.add_span_processor(span_processor=span_processor)
+    tracer_provider.add_span_processor(span_processor=otlp_span_processor)
+    tracer_provider.add_span_processor(span_processor=console_span_processor)
     trace_api.set_tracer_provider(tracer_provider=tracer_provider)
 
     # Instrument LangChain

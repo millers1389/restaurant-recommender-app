@@ -18,3 +18,4 @@ openai
 openinference-instrumentation-langchain>=0.1.15
 opentelemetry-sdk 
 opentelemetry-exporter-otlp
+chromadb

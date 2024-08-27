@@ -6,22 +6,21 @@ import ssl
 import certifi
 import logging
 from dotenv import load_dotenv
-from langchain_community.document_loaders import TextLoader, PyPDFLoader
-from langchain.text_splitter import CharacterTextSplitter
+from langchain_community.document_loaders import DirectoryLoader, TextLoader, PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
-from langchain_community.vectorstores import Annoy
+from langchain_community.vectorstores import Chroma
 from langchain.docstore.document import Document
 from bs4 import BeautifulSoup
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from langchain.retrievers import ContextualCompressionRetriever
+from langchain.retrievers.document_compressors import LLMChainExtractor
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# Check for tiktoken
-try:
-    import tiktoken
-except ImportError:
-    logging.error("tiktoken package is not installed. Please install it with 'pip install tiktoken'")
-    exit(1)
 
 # Load environment variables
 load_dotenv()
@@ -34,16 +33,16 @@ if not openai_api_key:
 def load_documents(directory):
     documents = []
     for filename in os.listdir(directory):
-        file_path = os.path.join(directory, filename)
-        if filename.endswith('.txt'):
-            logging.info(f"Loading TXT: {filename}")
-            loader = TextLoader(file_path, encoding='utf8')
-            documents.extend(loader.load())
-        elif filename.endswith('.pdf'):
-            logging.info(f"Loading PDF: {filename}")
-            loader = PyPDFLoader(file_path)
-            documents.extend(loader.load())
-    logging.info(f"Loaded {len(documents)} documents from local files")
+        if filename.endswith('.pdf'):
+            file_path = os.path.join(directory, filename)
+            try:
+                loader = PyPDFLoader(file_path)
+                documents.extend(loader.load())
+                logging.info(f"Loaded PDF: {filename}")
+            except Exception as e:
+                logging.error(f"Error loading PDF {filename}: {str(e)}")
+    
+    logging.info(f"Loaded {len(documents)} documents from local PDF files")
     return documents
 
 async def fetch_url(session, url, ssl_context):
@@ -68,15 +67,11 @@ async def fetch_url(session, url, ssl_context):
 
 def parse_html(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
-    # Remove script and style elements
     for script in soup(["script", "style"]):
         script.decompose()
     text = soup.get_text()
-    # Break into lines and remove leading and trailing space on each
     lines = (line.strip() for line in text.splitlines())
-    # Break multi-headlines into a line each
     chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-    # Drop blank lines
     text = '\n'.join(chunk for chunk in chunks if chunk)
     return text
 
@@ -115,21 +110,45 @@ def load_websites(urls_file, verify_ssl=True):
     return asyncio.run(load_websites_async(urls, verify_ssl))
 
 def split_documents(documents):
-    logging.info(f"Splitting {len(documents)} documents...")
-    text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=50)  # Reduced chunk size
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     split_docs = text_splitter.split_documents(documents)
     logging.info(f"Created {len(split_docs)} text chunks after splitting")
     return split_docs
 
 def create_vector_store(texts):
-    logging.info(f"Creating embeddings and vector store for {len(texts)} text chunks...")
-    try:
-        embeddings = OpenAIEmbeddings()
-        vector_store = Annoy.from_documents(texts, embeddings)
-        return vector_store
-    except Exception as e:
-        logging.error(f"Error creating vector store: {str(e)}")
-        raise
+    embeddings = OpenAIEmbeddings()
+    persist_directory = os.path.join(os.getcwd(), "vector_store")
+    
+    vector_store = Chroma.from_documents(
+        documents=texts,
+        embedding=embeddings,
+        persist_directory=persist_directory
+    )
+    
+    # Persist the data
+    vector_store.persist()
+    
+    return vector_store
+
+def create_retriever(vector_store):
+    base_retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 4})
+    llm = ChatOpenAI(temperature=0)
+    compressor = LLMChainExtractor.from_llm(llm)
+    retriever = ContextualCompressionRetriever(base_compressor=compressor, base_retriever=base_retriever)
+    return retriever
+
+def create_rag_chain(retriever, llm):
+    prompt = ChatPromptTemplate.from_template("""Answer the following question based only on the provided context:
+
+    Context: {context}
+
+    Question: {input}
+
+    Answer: """)
+    
+    document_chain = create_stuff_documents_chain(llm, prompt)
+    retrieval_chain = create_retrieval_chain(retriever, document_chain)
+    return retrieval_chain
 
 def main():
     start_time = time.time()
@@ -163,12 +182,14 @@ def main():
     vector_store_end = time.time()
     logging.info(f"Vector store creation took {vector_store_end - vector_store_start:.2f} seconds")
     
-    vector_store.save_local("vector_store")
+    retriever = create_retriever(vector_store)
+    llm = ChatOpenAI(temperature=0)
+    rag_chain = create_rag_chain(retriever, llm)
     
     end_time = time.time()
     total_time = end_time - start_time
     
-    logging.info(f"Vector store created and saved with {len(split_texts)} text chunks.")
+    logging.info(f"RAG setup completed with {len(split_texts)} text chunks.")
     logging.info(f"Total processing time: {total_time:.2f} seconds")
 
     # Log summary of loaded documents
@@ -180,5 +201,14 @@ def main():
     for source, count in source_count.items():
         logging.info(f"  {source}: {count} chunks")
 
+def ensure_vector_store_exists():
+    vector_store_path = "vector_store"
+    if not os.path.exists(vector_store_path):
+        logging.info("Vector store not found. Creating new vector store...")
+        main()
+    else:
+        logging.info("Vector store found.")
+
 if __name__ == "__main__":
     main()
+
