@@ -29,7 +29,7 @@ def num_tokens_from_string(string: str, encoding_name: str = "cl100k_base") -> i
     return num_tokens
 
 def truncate_text(text: str, max_tokens: int) -> str:
-    encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
+    encoding = tiktoken.encoding_for_model("gpt-4o-mini")
     return encoding.decode(encoding.encode(text)[:max_tokens])
 
 @lru_cache(maxsize=100)
@@ -39,7 +39,7 @@ def load_vector_store():
     return Chroma(persist_directory=persist_directory, embedding_function=embeddings)
 
 def setup_qa_chain(vector_store):
-    llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0.5)
+    llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.5)
     
     memory = ConversationBufferWindowMemory(
         memory_key="chat_history",
