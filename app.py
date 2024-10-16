@@ -22,7 +22,7 @@ def setup_instrumentation(instrumentation_type):
     if instrumentation_type == 'arize':
         space_id = os.getenv("SPACE_ID")
         api_key = os.getenv("ARIZE_API_KEY")
-        model_id = "raleigh-restaurant-recommender"
+        model_id = os.getenv("MODEL_ID")
         model_version = "V1.01"
         arize_instrument(space_id, api_key, model_id, model_version)
     elif instrumentation_type == 'phoenix':

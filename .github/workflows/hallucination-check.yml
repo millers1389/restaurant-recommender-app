@@ -1,0 +1,30 @@
+name: Hallucination Check Example
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - rag_query.py
+
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_KEY: ${{ secrets.OPENAI_KEY }}  
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        pip install -q arize==7.19.0 arize-phoenix==4.21.0 nest_asyncio packaging openai 'gql[all]'
+    - name: Run script
+      run: python ./experiments/hallucination.py
