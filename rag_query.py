@@ -123,6 +123,7 @@ def get_response(qa_chain, query):
 
 # TODO: This is never called from app.py, so it's not being used.
 def main():
+    print("This is an example change.")
     print("Loading vector store...")
     vector_store = load_vector_store()
     
